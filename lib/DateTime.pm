@@ -23,6 +23,8 @@ use Try::Tiny;
 
 ## no critic (Variables::ProhibitPackageVars)
 our $IsPurePerl;
+my $_time_zones = {};
+
 
 {
     my $loaded = 0;
@@ -173,7 +175,14 @@ __PACKAGE__->DefaultLocale('en-US');
 
     sub new {
         my $class = shift;
-        my %p     = $validator->(@_);
+	my %p;
+	my $skip_validation = $_[0] eq '__skip_validation__';
+	if (!$skip_validation) {
+            %p = $validator->(@_);
+	} else {
+	    shift;
+	    %p = (@_);
+	}
 
         Carp::croak(
             "Invalid day of month (day = $p{day} - month = $p{month} - year = $p{year})\n"
@@ -206,10 +215,13 @@ sub _new {
 
     $self->_set_locale( $p{locale} );
 
+    if (!ref($p{time_zone}) && !exists($_time_zones->{$p{time_zone}})) {
+        $_time_zones->{$p{time_zone}} = DateTime::TimeZone->new( name => $p{time_zone} );
+    }
     $self->{tz} = (
         ref $p{time_zone}
         ? $p{time_zone}
-        : DateTime::TimeZone->new( name => $p{time_zone} )
+        : $_time_zones->{$p{time_zone}}
     );
 
     $self->{local_rd_days} = $class->_ymd2rd( @p{qw( year month day )} );
@@ -305,9 +317,8 @@ sub _new_from_self {
 sub _handle_offset_modifier {
     my $self = shift;
 
-    $self->{offset_modifier} = 0;
-
     return if $self->{tz}->is_floating;
+    $self->{offset_modifier} = 0;
 
     my $second       = shift;
     my $utc_is_valid = shift;
@@ -572,9 +583,18 @@ sub today { shift->now(@_)->truncate( to => 'day' ) }
         },
     );
 
+    my $UTC = DateTime::TimeZone->new(name => 'UTC');
+
     sub from_object {
         my $class = shift;
-        my %p     = $validator->(@_);
+	my $skip_validation = $_[0] eq '__skip_validation__';
+	my %p;
+	if ($skip_validation) {
+            shift;
+	    %p = (@_);
+	} else {
+	    %p = $validator->(@_);
+	}
 
         my $object = delete $p{object};
 
@@ -592,13 +612,16 @@ sub today { shift->now(@_)->truncate( to => 'day' ) }
         # on the given value. If the object _is_ on a leap second, we'll
         # add that to the generated seconds value later.
         my $leap_seconds = 0;
-        if (   $object->can('time_zone')
-            && !$object->time_zone->is_floating
-            && $rd_secs > 86399
-            && $rd_secs <= $class->_day_length($rd_days) ) {
-            $leap_seconds = $rd_secs - 86399;
-            $rd_secs -= $leap_seconds;
-        }
+	eval {
+	    if (
+		!$object->time_zone->is_floating
+		&& $rd_secs > 86399
+		&& $rd_secs <= $class->_day_length($rd_days)
+	    ) {
+		$leap_seconds = $rd_secs - 86399;
+		$rd_secs -= $leap_seconds;
+            }
+	};
 
         my %args;
         @args{qw( year month day )} = $class->_rd2ymd($rd_days);
@@ -608,14 +631,9 @@ sub today { shift->now(@_)->truncate( to => 'day' ) }
 
         $args{second} += $leap_seconds;
 
-        my $new = $class->new( %p, %args, time_zone => 'UTC' );
+        my $new = $class->new( ($skip_validation ? ('__skip_validation__') : ()), %p, %args, time_zone => $UTC );
 
-        if ( $object->can('time_zone') ) {
-            $new->set_time_zone( $object->time_zone );
-        }
-        else {
-            $new->set_time_zone( $class->_default_time_zone );
-        }
+        $new->set_time_zone( eval { $object->time_zone } || $class->_default_time_zone);
 
         return $new;
     }
@@ -1918,6 +1936,7 @@ sub _add_duration {
     }
 
     my $new = ( ref $self )->from_object(
+	'__skip_validation__',
         object => $self,
         locale => $self->{locale},
         ( $self->{formatter} ? ( formatter => $self->{formatter} ) : () ),
@@ -1965,35 +1984,39 @@ sub _compare {
 
     return undef unless defined $dt2;
 
-    if ( !ref $dt2 && ( $dt2 == INFINITY || $dt2 == NEG_INFINITY ) ) {
+    if ( !ref($dt2) && ( $dt2 == INFINITY || $dt2 == NEG_INFINITY ) ) {
         return $dt1->{utc_rd_days} <=> $dt2;
     }
 
-    unless ( DateTime::Helpers::can( $dt1, 'utc_rd_values' )
-        && DateTime::Helpers::can( $dt2, 'utc_rd_values' ) ) {
+    if (   !$consistent   ) {
+	eval {
+	    my $is_floating1 = $dt1->time_zone->is_floating;
+            my $is_floating2 = $dt2->time_zone->is_floating;
+
+            if ( $is_floating1 && !$is_floating2 ) {
+                $dt1 = $dt1->clone->set_time_zone( $dt2->time_zone );
+            }
+            elsif ( $is_floating2 && !$is_floating1 ) {
+                $dt2 = $dt2->clone->set_time_zone( $dt1->time_zone );
+            }
+	};
+    }
+    
+    my @dt1_components;
+    my @dt2_components;
+
+    eval {
+        @dt1_components = $dt1->utc_rd_values;
+        @dt2_components = $dt2->utc_rd_values;
+    };
+
+    if ($@) {
         my $dt1_string = overload::StrVal($dt1);
         my $dt2_string = overload::StrVal($dt2);
 
         Carp::croak( 'A DateTime object can only be compared to'
                 . " another DateTime object ($dt1_string, $dt2_string)." );
     }
-
-    if (   !$consistent
-        && DateTime::Helpers::can( $dt1, 'time_zone' )
-        && DateTime::Helpers::can( $dt2, 'time_zone' ) ) {
-        my $is_floating1 = $dt1->time_zone->is_floating;
-        my $is_floating2 = $dt2->time_zone->is_floating;
-
-        if ( $is_floating1 && !$is_floating2 ) {
-            $dt1 = $dt1->clone->set_time_zone( $dt2->time_zone );
-        }
-        elsif ( $is_floating2 && !$is_floating1 ) {
-            $dt2 = $dt2->clone->set_time_zone( $dt1->time_zone );
-        }
-    }
-
-    my @dt1_components = $dt1->utc_rd_values;
-    my @dt2_components = $dt2->utc_rd_values;
 
     foreach my $i ( 0 .. 2 ) {
         return $dt1_components[$i] <=> $dt2_components[$i]
@@ -2239,7 +2262,10 @@ sub set_time_zone {
     my $was_floating = $self->{tz}->is_floating;
 
     my $old_tz = $self->{tz};
-    $self->{tz} = ref $tz ? $tz : DateTime::TimeZone->new( name => $tz );
+    if (!ref($tz) && !exists($_time_zones->{$tz})) {
+	$_time_zones->{$tz} = DateTime::TimeZone->new( name => $tz );
+    }
+    $self->{tz} = ref $tz ? $tz : $_time_zones->{$tz};
 
     $self->_handle_offset_modifier( $self->second, 1 );
 
