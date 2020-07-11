@@ -175,7 +175,14 @@ __PACKAGE__->DefaultLocale('en-US');
 
     sub new {
         my $class = shift;
-        my %p     = $validator->(@_);
+	my %p;
+	my $skip_validation = $_[0] eq '__skip_validation__';
+	if (!$skip_validation) {
+            %p = $validator->(@_);
+	} else {
+	    shift;
+	    %p = (@_);
+	}
 
         Carp::croak(
             "Invalid day of month (day = $p{day} - month = $p{month} - year = $p{year})\n"
@@ -577,9 +584,18 @@ sub today { shift->now(@_)->truncate( to => 'day' ) }
         },
     );
 
+    my $UTC = DateTime::TimeZone->new(name => 'UTC');
+
     sub from_object {
         my $class = shift;
-        my %p     = $validator->(@_);
+	my $skip_validation = $_[0] eq '__skip_validation__';
+	my %p;
+	if ($skip_validation) {
+            shift;
+	    %p = (@_);
+	} else {
+	    %p = $validator->(@_);
+	}
 
         my $object = delete $p{object};
 
@@ -613,14 +629,9 @@ sub today { shift->now(@_)->truncate( to => 'day' ) }
 
         $args{second} += $leap_seconds;
 
-        my $new = $class->new( %p, %args, time_zone => 'UTC' );
+        my $new = $class->new( ($skip_validation ? ('__skip_validation__') : ()), %p, %args, time_zone => $UTC );
 
-        if ( $object->can('time_zone') ) {
-            $new->set_time_zone( $object->time_zone );
-        }
-        else {
-            $new->set_time_zone( $class->_default_time_zone );
-        }
+        $new->set_time_zone( eval { $object->time_zone } || $class->_default_time_zone);
 
         return $new;
     }
@@ -1923,6 +1934,7 @@ sub _add_duration {
     }
 
     my $new = ( ref $self )->from_object(
+	'__skip_validation__',
         object => $self,
         locale => $self->{locale},
         ( $self->{formatter} ? ( formatter => $self->{formatter} ) : () ),
