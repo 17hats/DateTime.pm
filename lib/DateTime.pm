@@ -23,6 +23,8 @@ use Try::Tiny;
 
 ## no critic (Variables::ProhibitPackageVars)
 our $IsPurePerl;
+my $_time_zones = {};
+
 
 {
     my $loaded = 0;
@@ -206,10 +208,13 @@ sub _new {
 
     $self->_set_locale( $p{locale} );
 
+    if (!ref($p{time_zone}) && !exists($_time_zones->{$p{time_zone}})) {
+        $_time_zones->{$p{time_zone}} = DateTime::TimeZone->new( name => $p{time_zone} );
+    }
     $self->{tz} = (
         ref $p{time_zone}
         ? $p{time_zone}
-        : DateTime::TimeZone->new( name => $p{time_zone} )
+        : $_time_zones->{$p{time_zone}}
     );
 
     $self->{local_rd_days} = $class->_ymd2rd( @p{qw( year month day )} );
@@ -2239,7 +2244,10 @@ sub set_time_zone {
     my $was_floating = $self->{tz}->is_floating;
 
     my $old_tz = $self->{tz};
-    $self->{tz} = ref $tz ? $tz : DateTime::TimeZone->new( name => $tz );
+    if (!ref($tz) && !exists($_time_zones->{$tz})) {
+	$_time_zones->{$tz} = DateTime::TimeZone->new( name => $tz );
+    }
+    $self->{tz} = ref $tz ? $tz : $_time_zones->{$tz};
 
     $self->_handle_offset_modifier( $self->second, 1 );
 
