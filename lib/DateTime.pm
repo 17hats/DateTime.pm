@@ -317,9 +317,8 @@ sub _new_from_self {
 sub _handle_offset_modifier {
     my $self = shift;
 
-    $self->{offset_modifier} = 0;
-
     return if $self->{tz}->is_floating;
+    $self->{offset_modifier} = 0;
 
     my $second       = shift;
     my $utc_is_valid = shift;
